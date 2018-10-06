@@ -1,3 +1,4 @@
-# IoTSoundSensor-sandbox
+# Noise Pollution Meter
 
-Battery powered IoT device that reports outdoor sound levels via LoRaWAN for The Things Network. This repository is a place to publish all our tests and experiments regarding the development.
+Battery powered IoT device that reports outdoor sound levels to ThingsBoard IoT Platform via WiFi. 
+This will lay the groundwork for a LoRaWAN device sending data via TheThingsNetwork.
