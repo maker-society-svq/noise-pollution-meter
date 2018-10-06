@@ -1,6 +1,6 @@
 /*
 
-  IoTSoundSensor. Copyright (c) 2018 Pod Group Ltd. http://podm2m.com
+  Noise Pollution Meter. Copyleft (c) 2018 The Things Network Sevilla. https://www.thethingsnetwork.org/community/sevilla/
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License version 3 as
@@ -33,7 +33,7 @@
 
 const int Samples = 60; // How many sound measurements before calculating the min, max and avg in dBA. 60 samples as default.
 const int SamplesDelay = 1000; // How much time before taking each measurement from the sensor. 1 sample each second as default.
-const int SleepTime = 300e6; // How much time to sleep before restarting the cycle. Sleep for 5 minutes as default
+const int SleepTime = 10e6; // How much time to sleep before restarting the cycle. Sleep for 5 minutes as default
 
 // Sound sensor calibration coefficients. This has been calculated for the DFROBOT Gravity Analog Sound Sensor
 // DFR0034 https://www.dfrobot.com/product-83.html
@@ -53,7 +53,7 @@ const float P3 = -16110.00641618;
 // Find below a miscelanea of firmware parameters
 
 const int WiFiConnectionMaxTime = 30000; // 30 seconds max trying to connect to WiFi before sleeping to retry later.
-const int LosantConnectionMaxTime = 10000; // 10 seconds max trying to connect to WiFi before sleeping to retry later.
+const int ThingsBoardConnectionMaxTime = 10000; // 10 seconds max trying to connect to WiFi before sleeping to retry later.
 const int SerialBaud = 115200; // Serial mode bauds for reporting.
 const int SerialDebugMode = 1; // 1 = Print all samples on Serial Monitor, 0 = Print only the calculated report (min, max, avg) on the Serial Monitor.
 
@@ -63,21 +63,22 @@ const int SerialDebugMode = 1; // 1 = Print all samples on Serial Monitor, 0 = P
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 
-// We use Losant IoT Platform to report measurements in this example. You'll need an account in Losant.
-// Have a look at https://losant.com | https://www.losant.com/blog/getting-started-with-platformio-esp8266-nodemcu
-#include <Losant.h>
+// We use ThingsBoard IoT Platform MQTT transport to report measurements in this example. 
+// Set your ThingsBoard instance credentials on the noisepm/noisepm_creds.h file
+// Train yourself at https://thingsboard.io | https://thingsboard.io/docs/samples/esp8266/temperature/
+#include <PubSubClient.h>
 
 // Custom library to define all private credentials. Please replace with yours in that file.
-#include <my_credentials.h>
+#include <noisepm_creds.h>
 
 // We'll use WSSID / WPASS constants as WiFi Credentials to report measurements via WiFi ..
-const char* WIFI_SSID = WSSID;
-const char* WIFI_PASS =  WPASS;
+const char* WIFI_SSID = WIFIAP;
+const char* WIFI_PASS =  WIFIPASS;
 
 // ... and this is to login into Losant and define the device to report data to.
-const char* LOSANT_DEVICE_ID = DEVICE_ID;
-const char* LOSANT_ACCESS_KEY = ACCESS_KEY;
-const char* LOSANT_ACCESS_SECRET = ACCESS_SECRET;
+const char THINGSBOARD_SERVER[] = THINGSBOARDSERVER;
+const char* THINGSBOARD_CLIENTID = THINGSBOARDCLIENTID;
+const char* THINGSBOARD_TOKEN = THINGSBOARDTOKEN;
 
 // Some global private variables.
 
@@ -95,51 +96,42 @@ int sensor = A0;
 // The WiFi Client.
 WiFiClientSecure wifiClient;
 
-// The Losant Client.
-LosantDevice device(LOSANT_DEVICE_ID);
+// The ThingsBoard MQTT Pub/Sub client
+PubSubClient client(wifiClient);
 
-void UpdateMax (float Value)
-{
-  MaxValue = 0;
-  for (int i = 4; i > 0; i--)
-  {
-    //Serial.print(i);
-    window[i] = window[i - 1];
-  }
-  window[0] = Value;
+void setup() {
+  Serial.begin(SerialBaud);
 
-  for (int a = 0; a < 5; a ++)
-  {
-    if (window[a] > MaxValue)
-    {
-      MaxValue = window[a];
-    }
+  Serial.print("Connecting to WiFi...");
+  Serial.println(WIFI_SSID);
+  InitWifi();
+
+  client.setServer(THINGSBOARD_SERVER, 1883);
+  Serial.print("Connecting to ThingsBoard...");
+  Serial.println(THINGSBOARD_SERVER);
+  Serial.println(THINGSBOARD_CLIENTID);
+  Serial.println(THINGSBOARD_TOKEN);
+  if ( !client.connected() ) {
+    ConnectToThingsBoard();
   }
 }
 
-void setup()
-{
-  // Connect to Wifi.
-  Serial.begin(SerialBaud);
-  Serial.println();
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(WIFI_SSID);
+void loop() {
+  Sampling(SamplesDelay, Samples, SleepTime, SerialDebugMode);
+  client.loop();  
+}
 
-
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_OFF);
+void InitWifi() {
+  // WiFi.persistent(false);
+  // WiFi.mode(WIFI_OFF);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   unsigned long wifiConnectStart = millis();
 
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    if (millis() - wifiConnectStart > WiFiConnectionMaxTime)
-    {
-      if (WiFi.status() == WL_CONNECT_FAILED)
-      {
+  while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - wifiConnectStart > WiFiConnectionMaxTime) {
+      if (WiFi.status() == WL_CONNECT_FAILED) {
         Serial.println("Failed to connect to WIFI. Please verify credentials: ");
         Serial.println();
         Serial.print("SSID: ");
@@ -167,130 +159,67 @@ void setup()
   Serial.println();
 }
 
-void ConnectToLosant() 
-{  
-  Serial.print("Authenticating Device...");
-  HTTPClient http;
-  http.setTimeout(LosantConnectionMaxTime ); // Timeout to connect Losant
-  http.begin("http://api.losant.com/auth/device");
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& root = jsonBuffer.createObject();
-  root["deviceId"] = LOSANT_DEVICE_ID;
-  root["key"] = LOSANT_ACCESS_KEY;
-  root["secret"] = LOSANT_ACCESS_SECRET;
-  String buffer;
-  root.printTo(buffer);
+void ConnectToThingsBoard() {
+  unsigned long thingsBoardConnectStart = millis();
 
-  int httpCode = http.POST(buffer);
+  while (!client.connected()) {
 
-  if (httpCode > 0)
-  {
-    if (httpCode == HTTP_CODE_OK)
-    {
-      Serial.println("This device is authorized!");
-    }
-    else
-    {
-      Serial.println("Failed to authorize device to Losant.");
-      if (httpCode == 400)
-      {
-        Serial.println("Validation error: The device ID, access key, or access secret is not in the proper format.");
-      }
-      else if (httpCode == 401)
-      {
-        Serial.println("Invalid credentials to Losant: Please double-check the device ID, access key, and access secret.");
-      }
-      else
-      {
-        Serial.println("Unknown response from API");
-      }
+    // To ensure there's WiFI acquired before trying connect via MQTT
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("No Wifi. Putting device to sleep.");
       ESP.deepSleep(SleepTime); // going to sleep
     }
-  }
-  else
-  {
-    Serial.println("Failed to connect to Losant API.");
-    ESP.deepSleep(SleepTime); // going to sleep
-  }
 
-  http.end();
-}
+    if (millis() - thingsBoardConnectStart > ThingsBoardConnectionMaxTime) {
+      Serial.print("Failed to connect Thingsboard: Response Code = ");
+      Serial.print(client.state());
+      Serial.println();
+      Serial.println("Putting device to sleep before retrying.");
+      Serial.println("Please check your credentials as well.");
+      ESP.deepSleep(SleepTime); // going to sleep
 
-
-void report(double maxi, double minim , double avg)
-{
-  StaticJsonBuffer<500> jsonBuffer;
-  JsonObject& root = jsonBuffer.createObject();
-  root["maxi"] = maxi;
-  root["minim"] = minim;
-  root["avg"] = avg;
-
-  Serial.println();
-  Serial.print("Connecting to Losant...");
-
-  ConnectToLosant();
-
-  unsigned long losantConnectStart = millis();
-  device.connectSecure(wifiClient, LOSANT_ACCESS_KEY, LOSANT_ACCESS_SECRET);
-
-  while (!device.connected())
-  {
-    if (millis() - losantConnectStart  > LosantConnectionMaxTime)
-    {
-          Serial.println();
-          Serial.println("Failed to connect to Losant. Putting device to sleep before retrying.");
-          Serial.println("Please check your Losant configuration parameters as well.");
-          ESP.deepSleep(SleepTime); // going to sleep
-    
     } else {
-      delay(500);
-      Serial.print(".l.");
+      if (client.connect(THINGSBOARD_CLIENTID, THINGSBOARD_TOKEN, NULL)) {
+        Serial.println("Connected to ThingsBoard");
+      } else {
+        Serial.println(".t.");
+        delay(2000);
+      }
     }
   }
-  Serial.println("Connected!");
-  Serial.println();
-  device.sendState(root);   // send all the DATA
-  Serial.println("\nReported!");
 }
 
-void Sampling(int Sample_D, int n_Sample, int Sleep_t, int Mode)
-{
+void Sampling(int Sample_D, int n_Sample, int Sleep_t, int Mode) {
   Allvalue = 0;
   maximum = 0;
   minimum = 0;
   average = 0;
   int i = 0;
-  for (i = 0; i < n_Sample ; i++)
-  {
+
+  for (i = 0; i < n_Sample ; i++) {
     float OldvoltageValue;
+
     OldvoltageValue =  analogRead(sensor) * (3.3 / 1024);
-    if (OldvoltageValue <= 0.039)
-    {
+    if (OldvoltageValue <= 0.039) {
       OldvoltageValue = 0.039;
     }
+
     UpdateMax(OldvoltageValue);
     sound = P0 * pow(MaxValue, 3) + P1 * pow(MaxValue, 2) + P2 * MaxValue + P3;
     sound = 20 * log10(sound);
 
-    if (i == 0)
-    {
-      maximum = sound;     // For the first meausure
+    if (i == 0) {
+      maximum = sound; // For the first meausure
       minimum = sound;
-    }
-    else if (sound < minimum)   //If the actually sound is lower than the lowest sound measured
-    {
+    } else if (sound < minimum) { // If the actually sound is lower than the lowest sound measured
       minimum = sound;
-    }
-    else if (sound > maximum) //If the actually sound is higher than the highest sound measured
-    {
+    } else if (sound > maximum) { // If the actually sound is higher than the highest sound measured
       maximum = sound;
     }
-    Allvalue = Allvalue + sound; //all the values for this sampling
-    if (Mode == true)
-    {
-      average = Allvalue / (i + 1);    //Makes the average of the previous measures
+
+    Allvalue = Allvalue + sound; // All the values for this sampling
+    if (Mode == true) {
+      average = Allvalue / (i + 1); // Makes the average of the previous measures
       Serial.println("");
       Serial.print(average);
       Serial.print(",");
@@ -300,9 +229,9 @@ void Sampling(int Sample_D, int n_Sample, int Sleep_t, int Mode)
     }
     delay(Sample_D);
   }
-  average = Allvalue / n_Sample;    // Makes the average of this sample
-  if (Mode == false)
-  {
+
+  average = Allvalue / n_Sample; // Makes the average of this sample
+  if (Mode == false) {
     Serial.println("");
     Serial.print(average);
     Serial.print(",");
@@ -310,13 +239,38 @@ void Sampling(int Sample_D, int n_Sample, int Sleep_t, int Mode)
     Serial.print(",");
     Serial.print(minimum);
   }
+
   report(maximum, minimum, average);
   delay(1000);  // to make sure that it is reported
   ESP.deepSleep(Sleep_t); // going to sleep
 }
 
-void loop()
+void report(double maxi, double minim , double avg)
 {
-  device.loop();
-  Sampling(SamplesDelay, Samples, SleepTime, SerialDebugMode);
+  // Prepare a JSON payload string
+  String payload = "{";
+  payload += "\"maxi\":"; payload += maxi; payload += ",";
+  payload += "\"minim\":"; payload += minim; payload += ",";
+  payload += "\"avg\":"; payload += avg;
+  payload += "}";
+
+  // Send payload
+  char attributes[100];
+  payload.toCharArray( attributes, 100 );
+  client.publish( "v1/devices/me/telemetry", attributes );
+  Serial.println("Reported!");
+}
+
+void UpdateMax (float Value) {
+  MaxValue = 0;
+  for (int i = 4; i > 0; i--) {
+    window[i] = window[i - 1];
+  }
+  window[0] = Value;
+
+  for (int a = 0; a < 5; a ++) {
+    if (window[a] > MaxValue) {
+      MaxValue = window[a];
+    }
+  }
 }
