@@ -66,7 +66,7 @@ const int SerialDebugMode = 1; // 1 = Print all samples on Serial Monitor, 0 = P
 // We use ThingsBoard IoT Platform MQTT transport to report measurements in this example. 
 // Set your ThingsBoard instance credentials on the noisepm/noisepm_creds.h file
 // Train yourself at https://thingsboard.io | https://thingsboard.io/docs/samples/esp8266/temperature/
-#include <PubSubClient.h>
+#include <MQTT.h>
 
 // Custom library to define all private credentials. Please replace with yours in that file.
 #include <noisepm_creds.h>
@@ -97,17 +97,17 @@ int sensor = A0;
 WiFiClientSecure wifiClient;
 
 // The ThingsBoard MQTT Pub/Sub client
-PubSubClient client(wifiClient);
+MQTTClient client;
 
 void setup() {
   Serial.begin(SerialBaud);
 
-  Serial.print("Connecting to WiFi...");
+  Serial.print("Connecting to WiFi: ");
   Serial.println(WIFI_SSID);
   InitWifi();
 
-  client.setServer(THINGSBOARD_SERVER, 1883);
-  Serial.print("Connecting to ThingsBoard...");
+  client.begin(THINGSBOARD_SERVER, wifiClient);
+  Serial.print("Connecting to ThingsBoard: ");
   Serial.println(THINGSBOARD_SERVER);
   Serial.println(THINGSBOARD_CLIENTID);
   Serial.println(THINGSBOARD_TOKEN);
@@ -122,8 +122,8 @@ void loop() {
 }
 
 void InitWifi() {
-  // WiFi.persistent(false);
-  // WiFi.mode(WIFI_OFF);
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_OFF);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
@@ -171,8 +171,7 @@ void ConnectToThingsBoard() {
     }
 
     if (millis() - thingsBoardConnectStart > ThingsBoardConnectionMaxTime) {
-      Serial.print("Failed to connect Thingsboard: Response Code = ");
-      Serial.print(client.state());
+      Serial.print("Failed to connect Thingsboard.");
       Serial.println();
       Serial.println("Putting device to sleep before retrying.");
       Serial.println("Please check your credentials as well.");
