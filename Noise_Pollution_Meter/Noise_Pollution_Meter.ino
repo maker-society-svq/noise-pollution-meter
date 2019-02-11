@@ -76,7 +76,7 @@ const int SerialDebugMode = 1; // 1 = Print all samples on Serial Monitor, 0 = P
 const char* WIFI_SSID = WIFIAP;
 const char* WIFI_PASS =  WIFIPASS;
 
-// ... and this is to login into Losant and define the device to report data to.
+// ... and this is to login into ThingsBoard and define the device to report data to.
 const char THINGSBOARD_SERVER[] = THINGSBOARDSERVER;
 const char* THINGSBOARD_CLIENTID = THINGSBOARDCLIENTID;
 const char* THINGSBOARD_TOKEN = THINGSBOARDTOKEN;
